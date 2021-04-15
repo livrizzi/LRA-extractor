@@ -1,0 +1,180 @@
+import pandas as pd
+import glob
+import os
+from secondary_script_LRA import message_error, Done
+from datetime import date
+import time
+
+class dataframe_day:
+    """Extracts a dataframe from a daily LRA file and simplifies it to only retrieve a few columns:
+        - list of currencies chosen by user
+        - one column per time buckets chosen by user """
+
+    def __init__(self, excel_file, entity, time_bucket):
+        if entity == "BSJL":
+            df = pd.read_excel(excel_file, 'AdjustedData', header = 7, skiprows =[8,9], usecols="C:CX", engine = "openpyxl") #header to start at row 8; skip useless rows, select useful column; makes the processing time shorter
+        else:
+            df = pd.read_excel(excel_file, 'AdjustedData', header = 8, skiprows =[9,10], usecols="D:CX", engine = "openpyxl") #this engine is optimized for xslx files (4 times faster): https://www.python-excel.org/
+        
+        name_of_Day_1 = str() #needs to be put out of the below if as, if user doesn't pick "overnight", the below "rename" function will crash
+        if "Overnight" in time_bucket: #there is no "Overnight" bucket in LRA files; it can be anywhere between 1 to 5 days
+            list_start = ["01D", "02D", "03D", "04D", "05D"]
+            for item in list_start:
+                if item in df.columns and len(df[item].unique()) > 2: #in Mumbai we can have: 01D existing but with 0 data (leading to only 2 unique numbers), meaning real overnight bucket is in a subsequent column
+                    name_of_Day_1 = item
+                    break #we stop as we found the name of the overnight column
+            time_bucket = [name_of_Day_1] + time_bucket[1:] #adds o/n column name e.g. 03D and removes "Overnight" from the list
+            
+        #For BSJL and other entities, the currencies have no label and are hence named "Unnamed" by default by panda
+        if entity == "BSJL":
+            df = pd.DataFrame(df, columns = ["Unnamed: 2"] + time_bucket) #Currency/D1/D30 but gets too many lines (as it countains the 3 stress data)
+            interesting_rows = int((len(df.index)-1)/3) #only keeps the data from idiosyncratic stress. Need to transform the float into int as head function only processes int
+            
+        else:
+            df = pd.DataFrame(df, columns = ["Unnamed: 3"] + time_bucket)
+            interesting_rows = int((len(df.index)-4)/3) 
+            
+        df.rename(columns={"Unnamed: 3": "Currency", "Unnamed: 2": "Currency", name_of_Day_1: "Overnight"}, inplace=True) #rename some columns thanks to dictionnary; in place is needed for modification (otherwise it creates a copy by default)
+        df = df.head(interesting_rows) #only keeps interesting lines
+      
+        self.day = excel_file[-13:-5] #save the date of the file as a string: YYYYMMDD
+        self.dataframe = df
+
+class dataframe_final:
+    """Creates the final dataframe (one per time bucket chosen by user):
+        - First we create the column of currencies chosen by user
+        - Then we add the daily data from the 'dataframe_day' class"""
+    
+    def __init__(self, list_currencies, bucket):
+        self.dataframe = pd.DataFrame({'Currency': list_currencies})
+        self.bucket = bucket #can be overnight, 7D, 1m, 3m
+        
+    def new_date(string): #transforms a string (should be in YYYYMMDD format) in a date object; function stored here for clarity
+        try:
+            Y, M, D = int(string[:4]), int(string[4:6]), int(string[6:])
+            return date(Y, M, D) #https://stackabuse.com/how-to-format-dates-in-python/
+        except:
+            return string #in case there is file for which the name is not a YYYYMMDD (e.g. with "revised" suffix), avoids bugs
+        
+    def format_df_final(self):      
+        self.dataframe.fillna(0, inplace = True) #replaces NaN by 0      
+        self.dataframe.sort_index(axis=1, inplace=True) #sorts columns from earliest date to latest
+        self.dataframe.set_index("Currency", inplace = True) #sets the currency column as index
+        self.dataframe.columns = map(dataframe_final.new_date, list(self.dataframe.columns))
+        #same as self.dataframe.columns = [dataframe_final.new_date(item) for item in self.dataframe.columns] #converts the string YYYYMMDD to date objects
+        return self
+        
+def save_data_excel(list_currencies, folder_output, entity, list_final_df):
+    from config_LRA import launcher
+         
+    currencies_text = str()
+    for item in list_currencies:
+        currencies_text += item + "&"
+    currencies_text = currencies_text[:-1]
+    name_output_file = entity + "-" + currencies_text + ".xlsx"
+    
+    output_excel_address = os.path.join(folder_output, name_output_file)
+    writer = pd.ExcelWriter(output_excel_address, engine='xlsxwriter', date_format='dd mmm yyyy') #change the date format: https://xlsxwriter.readthedocs.io/example_pandas_datetime.html
+    money_fmt = writer.book.add_format({'num_format': '#,##0', 'center_across':True}) #not posted yet
+    first_row_fmt = writer.book.add_format({'bg_color': '#00AEEF', 'font_color': '#FFFFFF','bottom':1, 'top':1, 'left':1, 'right':1})
+    border_fmt = writer.book.add_format({'bottom':1, 'top':1, 'left':1, 'right':1}) #put borders around the cell (1 for thin ones)
+    
+    workbook = writer.book
+    # Position the dataframes in the worksheet.
+    for df_final in list_final_df:
+        df_final.dataframe.to_excel(writer, sheet_name=df_final.bucket) #Default position, cell A1.
+   
+        worksheet = writer.sheets[df_final.bucket] #enables to do some formatting in this work sheet
+        worksheet.set_column('A:A', 10) #adjust width of currency column
+        
+        for idx, col in enumerate(df_final.dataframe):  # loop through all columns (idx is number of column starting at 0, col is the name i.e. date), to adjust column width
+            worksheet.set_column(idx+1, idx+1, 15, money_fmt)  #set column width, need +1 as 0 is the currency column (not captured in the enumerate but real when assigning column width)
+            
+        #For cell A1 (0,0) until (last row, last col): put borders around cell IF not empty which is always true. https://xlsxwriter.readthedocs.io/working_with_conditional_formats.html
+        worksheet.conditional_format(0, 0, 0, len(df_final.dataframe.columns), {'type' : 'no_blanks', 'format': first_row_fmt})
+        worksheet.conditional_format(0, 1, len(df_final.dataframe), len(df_final.dataframe.columns), {'type' : 'no_blanks', 'format': border_fmt})
+        
+        #creates a graph per currency: https://pandas-xlsxwriter-charts.readthedocs.io/chart_line.html
+        charts_position = ["B8","H8","P8","X8","AF8"] #5 choices max anyway
+        for i in range(len(list_currencies)):
+            chart = workbook.add_chart({'type': 'line'})
+            chart.add_series({
+                'categories': [df_final.bucket, 0, 1, 0, len(df_final.dataframe.columns)], #sheet name, first row, first column, last row, last column
+                'values':     [df_final.bucket, i+1, 1, i+1, len(df_final.dataframe.columns)]
+                })
+            
+            chart.set_title({'name': df_final.bucket + " " + list_currencies[i] + " flows"}) #https://xlsxwriter.readthedocs.io/chart.html
+            chart.set_x_axis({'position_axis': 'on_tick', 'date_axis': True, 'num_font':  {'rotation': -45}})# Configure the chart axes; no name here
+            chart.set_y_axis({'name': 'GBP mm', 'name_layout': {'x': 0.02,'y': 0.2,}, 'major_gridlines': {'visible': False}, 'display_units': 'millions', 'display_units_visible': False}) #displays in millions but remove the "millions" text
+            chart.set_legend({'position': 'none'}) # Turn off chart legend. It is on by default in Excel.
+            worksheet.insert_chart(charts_position[i], chart)
+        
+    writer.save()
+    
+    print("Total processing time: {} seconds".format(int(time.time()-time_start)))
+    Done(launcher, folder_output, name_output_file)
+    
+def data_verification(entity, folder_input, folder_output, list_currencies, dico_time_bucket):
+    from config_LRA import launcher
+    
+    if entity == "Select entity":
+        message_error(launcher, "Please select an entity !")
+    elif folder_input == "":
+        message_error(launcher, "Please input the root folder !")
+    elif folder_output == "":
+        message_error(launcher, "Please input the data output !")
+    elif sum(dico_time_bucket.values())==0:
+        message_error(launcher, "Please select a time bucket !")
+    else:
+        new_currency_list = [item for item in list_currencies if not item.startswith("Select")]
+        if len(new_currency_list) == 0:
+            message_error(launcher, "Please select a currency !")
+
+def extract_data(entity, folder_input, folder_output, list_currencies, dico_time_bucket):
+    global time_start
+    
+    time_start = time.time()
+    data_verification(entity, folder_input, folder_output, list_currencies, dico_time_bucket)
+
+    initial_directory = os.getcwd() #capture the directory
+    os.chdir(folder_input) #change the directory to the folder input by user (useful for glob)
+    
+    list_currencies = list(set(list_currencies)) #remove any currency input twice
+    list_currencies = [item for item in list_currencies if not item.startswith("Select")] #in case not all 5 currencies have been picked
+    list_currencies.sort()
+    
+    if "ALL" in list_currencies:
+        list_currencies.remove("ALL")
+        list_currencies.append("Total")#this way we can pick up Total data AND it will appear in last row of the excel file output
+
+    #from a user choice to the name of the file on the shared folder:
+    entities_dictionary = {"BMBS": "BMB", "BSJL": "BSJL", "Hong Kong branch": "HK", "Mumbai branch": "Mumbai", "Singapore branch":"Singapore Branch", "Shanghai branch": "Shanghai", "Tokyo branch": "Tokyo"}
+        
+    list_of_files = glob.glob('**/*.xlsm', recursive = True) #list of all files in current cwd (root, input by user), AND sub folders (thanks to recursive = True)
+    list_of_files = [item for item in list_of_files if ((entities_dictionary[entity] + " Daily Stress Test") in item) and "Template" not in item and "~" not in item] #we only take daily stress test files; (~ is to remove the files currently used, that can't be open)
+
+    time_bucket = [key for key, value in dico_time_bucket.items() if value == 1] #only captures the time buckets ticked by user (in that case, their variable value is 1)
+
+    #Creates final dataframes
+    list_final_df = []
+    for bucket in time_bucket:
+        list_final_df.append(dataframe_final(list_currencies, bucket)) #at this stage, the final df only has the currency column, and is assigned a time bucket as per user input
+
+    print(list_of_files, len(list_of_files)) #to spot any weird file, have an idea of the total relevant files
+    files_processed_counter = 0
+
+    for file in list_of_files: #we study every relevant file one by one; and only one time !
+        df_day = dataframe_day(file, entity, time_bucket) #creates a dataframe from the excel file, and only keeps the useful data
+        
+        for df_final in list_final_df: #the point is to study a daily df only once, and extracts the needed data (per time bucket) for every final_df
+            df_temp_column = pd.merge(df_final.dataframe, df_day.dataframe[["Currency", df_final.bucket]], on="Currency", how='left') #the currency is the link between the 2 files, we extract the data from the needed time bucket
+            df_final.dataframe[df_day.day] = df_temp_column[df_final.bucket] #adds a column to the final df (if a currency is not present in the daily df file, NaN will be input in the cell)
+            
+        files_processed_counter += 1
+        print(df_day.day + ", completion: " + "{:.0%}".format(files_processed_counter/len(list_of_files))) #progress bar; 0 represents the number of digits
+
+    list_final_df = map(dataframe_final.format_df_final, list_final_df) #we apply the formating function to all dinal_df; list_final_df is now an iterator
+
+    #writing in Excel: https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.DataFrame.to_excel.html
+    save_data_excel(list_currencies, folder_output, entity, list_final_df)
+    os.chdir(initial_directory) #put the cwd as it initially was; not sure if useful
