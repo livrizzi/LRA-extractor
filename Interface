@@ -1,0 +1,106 @@
+from tkinter import *
+from tkinter import filedialog, ttk
+from secondary_script_LRA import to_quit, contact
+from main_script_LRA import extract_data
+
+class slice_obj:
+    def __init__(self, label_text, text_string):
+        self.area = Frame(launcher, width=400, height=800, borderwidth=1, bg = 'white')
+        Label(self.area, text= label_text, bg = 'white').pack(side=TOP) #displays "Data input" or "Data output"
+        
+        Label(self.area, text="   ", bg = 'white').pack(side=LEFT) #to align
+        
+        self.data_input = Entry(self.area, textvariable= StringVar(), width =46)
+        self.data_input.insert(0, text_string) 
+        self.data_input.pack(side=LEFT)
+        
+        ttk.Button(self.area, text="Pick a folder", command= lambda: slice_obj.pick_folder(self)).pack(side=LEFT, padx=10)
+        
+    def pick_folder(self):
+        global launcher
+        launcher.withdraw()
+        initial_folder = self.data_input.get()
+        folder_selected = filedialog.askdirectory()
+        
+        if folder_selected == "": #in case we click the button but end up not picking any folder; we resume to the one previously input
+            folder_selected = initial_folder
+
+        launcher.deiconify()
+        self.data_input.delete(0, END) #empty the cell
+        self.data_input.insert(0, folder_selected) #add the new folder
+
+"Launch the interface"
+def lauch_main_menu():
+    global launcher, data_input
+    
+    launcher = Tk() #creates the variable that will be used in the whole module
+    launcher.title("LRA Data Extractor")
+    launcher.configure(background='white')
+    launcher.resizable(width=0, height=0) #prevents from resizing
+    
+    upper_slice = Frame(launcher, width=400, height=800, borderwidth=1, bg = 'white')
+    upper_slice.pack(fill=BOTH, side = TOP)
+    
+    
+    Button(upper_slice,text='Quit', command=lambda: to_quit(launcher), bg = 'white').pack(side=RIGHT, padx=2)
+    Button(upper_slice,text='Contact', command=lambda: contact(launcher), bg = 'white').pack(side=RIGHT, padx=2)
+
+    spacing_slice = Frame(launcher, width=400, height=30, borderwidth=1, bg = 'white').pack(fill=BOTH, side = TOP)
+
+    optionVar_entity = StringVar()
+    optionVar_entity.set("Select entity")
+    entity_button = OptionMenu(launcher, optionVar_entity, "BMBS", "BSJL", "Hong Kong branch", "Mumbai branch", "Singapore branch", "Shanghai branch", "Tokyo branch")
+    entity_button["menu"].config(bg="white")
+    entity_button.configure(background='white')
+    entity_button.pack(side=TOP)
+    
+    Label(launcher, text="Time bucket:", bg = 'white').pack(side=TOP)
+    list_bucket = ["Overnight", "07D", "30D", "90D"]
+    list_chosen_buckets = []
+    
+    button_ticking_slice = Frame(launcher, width=400, height=1, borderwidth=1, bg = 'white')
+    for i in range(len(list_bucket)):
+        chkValue = IntVar()
+        if list_bucket[i] in ["Overnight", "30D"]:
+            chkValue.set(1) #have these options ticked, as v likely to be selected by user
+        
+        list_chosen_buckets.append(chkValue)
+        Checkbutton(button_ticking_slice, text = list_bucket[i], variable = list_chosen_buckets[i], \
+                     onvalue = 1, offvalue = 0, height=1, width = 10, bg = 'white').pack(fill = BOTH, side=LEFT)
+    
+    
+    button_ticking_slice.pack(fill=BOTH, side = TOP)
+
+   
+    input_entry_button = slice_obj("Data input:", "")
+    input_entry_button.area.pack(fill=BOTH, side = TOP)
+    
+    output_entry_button = slice_obj("Data output:", r"C:\Users\livrizza\.spyder-py3\LRA extraction") #r is needed to input folder address
+    output_entry_button.area.pack(fill=BOTH, side = TOP)
+    
+    
+    spacing_slice = Frame(launcher, width=400, height=10, borderwidth=1, bg = 'white').pack(fill=BOTH, side = TOP)
+
+    choices_currency = ["ALL", "AUD", "CNH", "CNY", "EUR", "GBP", "HKD", "IDR", "INR", "JPY", "MYR", "NZD", "SGD", "THB", "USD"]
+    list_chosen_currencies = []
+    
+    for i in range(5):
+        list_chosen_currencies.append(StringVar(launcher))
+        list_chosen_currencies[i].set("Select currency")
+        OptionMenu_obj = OptionMenu(launcher, list_chosen_currencies[i], *choices_currency)
+        OptionMenu_obj["menu"].config(bg="white")
+        OptionMenu_obj.configure(background="white")
+        OptionMenu_obj.pack(side=TOP)
+        
+        
+    spacing_slice = Frame(launcher, width=400, height=30, borderwidth=1, bg = 'white').pack(fill=BOTH, side = TOP)
+    Button(launcher,text='Extract the data !', fg = "blue", bg = 'white', command= lambda: extract_data(optionVar_entity.get(), input_entry_button.data_input.get(), output_entry_button.data_input.get(), [item.get() for item in list_chosen_currencies], {list_bucket[i]: list_chosen_buckets[i].get() for i in range(len(list_bucket))})).pack(side=TOP)
+       
+    bottom_slice = Frame(launcher, width=400, height=800, borderwidth=1, bg = 'white')
+    bottom_slice.pack(fill=BOTH, side = BOTTOM)
+    Label(bottom_slice, text="FLM Asia Tool", bg = 'white').pack(side=RIGHT)
+    
+    Frame(launcher, width=400, height=50, borderwidth=1, bg = 'white').pack(fill=BOTH)
+    launcher.mainloop()
+    
+lauch_main_menu()
